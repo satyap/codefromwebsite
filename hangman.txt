@@ -1,0 +1,81 @@
+#!/usr/local/bin/perl -w
+
+# Hangman v1.0
+# By Satya <http://satya.virtualave.net/>
+#
+# Plays a game of Hangman. Depends on a word list file containing
+# one word per line, like the system dictionary.
+# Edit $dict and $guesses to suit.
+#
+# Distributed freely by Satya (me). Inform me if you distribute it
+# further. Distribute with these comments intact.
+#
+# If you make changes, do not distribute without asking me. In any case,
+# give me credit. Keep these lines intact.
+#
+# Do not distribute commercially without asking me. Let me 
+# know if you use it, and whether you like it. Email-ware :-)
+
+use strict;
+
+my $dict='/usr/dict/words'; #edit suitably
+my $guesses=6;
+
+#end config
+
+my ($word,$flags,$count,@alpha,$g,$i);
+
+open(WORDS,"<$dict") || die "Cannot read from $dict: $!\n";
+srand;
+rand($.) < 1 && ($word = $_) while <WORDS>;
+close(WORDS);
+
+chomp($word);
+$word=~tr/[A-Z]/[a-z]/;
+
+$flags=$word;
+$count=0;
+
+while($count<$guesses)	{
+	print "\nBad guesses: $count (upto $guesses allowed)\n";
+	for($i=0;$i<length($word);$i++)	{
+		if(substr($flags,$i,1) ne '1')	{print '_'}
+			else	{print substr($word,$i,1)}
+		}
+	print "\nYour guesses: ";
+	foreach (@alpha)	{print}
+	$g=input();
+	while(join('',@alpha)=~/$g/)	{
+		print "Already guessed\n";
+		$g=input();
+		}
+	push(@alpha,$g);
+	if($flags=~/$g/)	{
+		$flags=~s/$g/1/g;
+		}
+	else	{
+		$count++;
+		}
+
+	if($flags!~/[a-z]/)	{
+		print "\nYou got it!";
+		last;
+		}
+} #while
+
+
+print "The word was `$word'\n";
+
+
+exit;
+
+
+sub input()	{
+	print "\nNext letter: ";
+	chomp($_=<STDIN>);
+	tr/[A-Z]/[a-z]/;
+	$_;
+}
+
+
+__END__

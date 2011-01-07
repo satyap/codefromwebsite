@@ -1,0 +1,216 @@
+#!/bin/bash
+
+# WHAT AM I: If you like to rsync/rdiff your backups to an EBS volume on
+# Amazon, this script will spin up a spot instance, attach the volume, run your
+# backup, detach, and cleanup. A little bash knowledge and EC2 knowledge is
+# required.  Please adjust variables below.
+
+# CHANGELOG:
+# 2010-09-10
+#  Can use spot OR micro instance; see type variable below.
+# 2010-08-24
+#  Volume ID will be passed as first parameter now.
+# 2010-08-22
+#  Added src variable, caused it to use mount_point shell variable, and fixed
+#  bug in detecting attachment of EBS volume. Used --delete-after for rsync.
+#  Added ssh-user and partition. Cleaned up some variables and exports.
+#  Tweaked ssh options to actually work.
+#  Original from http://roeeb.blogspot.com/2010/03/backup-to-amazon-ec2-using-spot.html
+#  In most of the comments, "me" refers to that original author.
+
+# To make the already-running check work right, chmod 755 this script and run
+# it as ./ec2-backup.bash.
+
+# Steps:
+# Check for already running
+# Check if source files given
+#   Request spot instance, check for exit code, get $rid OR Request micro instance and get $iid
+#   If spot, Wait for $rid to become active, get instance id $iid
+# Wait for $iid to be running
+# Attach volume
+# Wait for "attached"
+# Get external DNS name
+# ssh in, mount the volume
+# rsync
+# ssh in, umount the volume
+# Detach volume, terminate instance, cleanup
+
+# Amazon login parameters. These are probably the only ones that really need exporting.
+export EC2_PRIVATE_KEY=~/.ssh/pk-.pem
+export EC2_CERT=~/.ssh/cert-.pem
+
+### Volume to mount to machine. The volume that we've previously created.
+export vol_name=$1
+shift
+
+## What to backup
+export src=$@
+
+# EC2 tools path
+#export JAVA_HOME=/usr/lib64/jvm/sun-java-5.0u17/jre
+#export EC2_HOME=/root/ec2-api-tools-1.3-46266/
+#export EC2_BIN=$EC2_HOME/bin/
+
+### Machine image you want to use as the base for the machine you want to start up.
+export amiid="ami-12345678"
+
+### SSH key to use to setup the machine with. In the EC2 console you need to setup an SSH key that you can connect to your new machine with as by default they do not allow access by any other means.
+export key="blah"
+
+### Local SSH key to connect to machine with. Location of the actual SSH key that you also put in the EC2 console. This is the same PEM file that came from the key above.
+export id_file="/home/satyap/.ssh/blah.pem"
+
+### Where to launch your machine.
+export zone="us-east-1a"
+
+## Where to mount the volume on our new machine.
+export mount_point="/mnt/vol"
+
+### Device name for the mount
+export device_name="/dev/sdi"
+## If you were stupid enough to make partitions on the EBS volume.... Otherwise use a blank one like below.
+# export partition=
+export partition=1
+
+### Security group. To help me identify my machine, I use security groups as EC2 doesn't have real instance labels.
+export group="ssh-only"
+
+### Maximum price for amazon spot instance
+export price=".08"
+
+### Type of instance to run: spot or micro
+export type="micro"
+
+### The instance login. Usually root for redhat, ubuntu for ubuntu.
+export ssh_user=ubuntu
+
+### Important trick here.
+# 1. Because you will be starting up a different machine every time you run
+# this script, you'll be forced to say yes to accepting the change of host for
+# the SSH key, the options here make sure the doesn't happen and you can run
+# this completely automated without human interaction.
+# 2. Since we don't want to save the host SSH key, we will redirect the known
+# hosts list to a temp file
+export KNOWN_HOSTS="/tmp/known_hosts.$$"
+rm $KNOWN_HOSTS
+ssh_opts="-i $id_file -o StrictHostKeyChecking=no -o UserKnownHostsFile=$KNOWN_HOSTS"
+
+# set up a temp file to catch request ID
+tmpfile="/tmp/aws-rsi.$$"
+
+# See if the backup is still running. If this script is already running then
+# abort. This is necessary if you are running a cron job and want only one
+# instance of this script at a time. You may delete it if you don't care for
+# this check. It is important to name the script file 'backup.bash' for this
+# check to work.
+pidof_out=`/bin/pidof -x $0`
+num=`echo $pidof_out | wc -w`
+if [ "$num" != "1" ]
+then
+    echo "$0 is already running"
+    exit
+fi
+echo backup.bash is not already running
+
+# Do we have anything to do?
+if [ "$src" == "" ]
+then
+    echo "$0 $@ vol-12345678 list_of_files_to_backup"
+    exit
+fi
+
+### Start the instance
+# Capture the output so that we can grab the INSTANCE ID field and use it to
+# determine when the instance is running
+
+if [ "$type" == "spot" ]
+then
+    echo Requesting spot instance ${amiid} with price of ${price}
+    request_cmd="${EC2_BIN}ec2-request-spot-instances ${amiid} --price ${price} -z ${zone} -k ${key} --group ${group}"
+    grep_for="SPOTINSTANCEREQUEST"
+else
+    echo Requesting micro instance ${amiid}
+    request_cmd="${EC2_BIN}ec2-run-instances ${amiid} -t t1.micro -z ${zone} -k ${key} --group ${group}"
+    grep_for="INSTANCE"
+fi
+
+$request_cmd > $tmpfile
+if [ $? != 0 ]; then
+    echo Error requesting $type instance for image ${amiid}:
+    cat $tmpfile
+    exit 1
+fi
+
+# Whether spot or micro, populate both these variables.
+rid=`cat $tmpfile | grep $grep_for | cut -f2`
+iid="$rid"
+
+# spot instance needs extra step to find out when the request is serviced.
+if [ "$type" == "spot" ]
+then
+    ### Loop until the status changes to 'active'
+    sleep 30
+    while true
+    do
+        echo Checking request ${rid}
+        request=`${EC2_BIN}ec2-describe-spot-instance-requests ${rid} | grep SPOTINSTANCEREQUEST`
+        echo $request
+        status=`echo $request | cut -f6 -d' '`
+        if [ "$status" == "active" ]; then
+            iid=`echo $request | cut -f8 -d' '`
+            break
+        else
+            echo Waiting for request...
+            sleep 20
+        fi
+    done
+    echo Request ${rid} is active
+
+fi # done requesting instance
+
+### Loop until instance is running
+
+sleep 5
+while true; do
+    echo Checking instance $iid
+    status=`${EC2_BIN}ec2-describe-instances ${iid} | grep INSTANCE  | cut -f6`
+    echo $status
+    if [ $status == "running" ]; then break; else sleep 10; fi
+done
+echo Instance ${iid} is running.
+
+### Attach the volume to the running instance
+echo Attaching volume ${vol_name}
+
+${EC2_BIN}ec2-attach-volume ${vol_name} -i ${iid} -d ${device_name}
+
+sleep 10
+while true; do
+    echo Checking volume $vol_name
+    status=`${EC2_BIN}ec2-describe-volumes | grep ATTACHMENT | grep $vol_name | grep ${iid} | cut -f5`
+    echo $status
+    if [ "$status" == "attached" ]; then break; else sleep 10; fi
+done
+echo Volume ${vol_name} is attached
+
+# Grab the external DNS name
+EC2_HOST=`${EC2_BIN}ec2-describe-instances | grep "${iid}" | tr '\t' '\n' | grep amazonaws.com`
+
+
+### This line logs on and mounts our volume to our machine.
+ssh $ssh_opts $ssh_user@$EC2_HOST "sudo mkdir $mount_point && sudo mount ${device_name}$partition $mount_point"
+
+### Run rsync, whatever options you'd like, here are a couple of examples I use.
+rsync -e "ssh $ssh_opts" --rsync-path "sudo rsync" --delete-after -Pav $src $ssh_user@$EC2_HOST:$mount_point/
+
+### Clean up. Disconnect the volume
+ssh $ssh_opts $ssh_user@$EC2_HOST "ls -l $mount_point; sudo umount -d ${mount_point}"
+
+### Detach volume from machine
+${EC2_BIN}ec2-detach-volume ${vol_name} -i ${iid}
+
+### Shutdown instance
+${EC2_BIN}ec2-terminate-instances ${iid}
+
+### Cleanup
+rm $tmpfile $KNOWN_HOSTS

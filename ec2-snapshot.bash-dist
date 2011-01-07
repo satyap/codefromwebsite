@@ -1,0 +1,83 @@
+#!/bin/bash
+
+# This work is licensed under a
+# Creative Commons Attribution-NonCommercial-ShareAlike 3.0 Unported License
+# http://creativecommons.org/licenses/by-nc-sa/3.0/
+#
+# Delete snapshots except the last "keep" number for the given description.
+# Create new snapshot of vol_id, label with given description.
+# No guarantees. Use at your own risk.
+#
+# CHANGELOG:
+# 2010-08-31
+#  Now sorts the snapshot list before doing anything else, so that diagnostic output will also be sorted.
+# 2010-08-24
+#  Volume ID will be passed as first parameter now.
+# 2010-08-24
+#  First version
+
+export EC2_PRIVATE_KEY=~/.ssh/pk-.pem
+export EC2_CERT=~/.ssh/cert-.pem
+
+# Volume to backup
+vol_id=$1
+# Use a simple string for the description
+description="$2"
+# How many snapshots to keep
+keep=$3
+
+
+usage() {
+    cat <<EOT
+ec2-snapshot.bash volume-id description n
+    description = a simple string
+    n = number of snapshots to keep, it'll delete all but the last n
+    snapshots
+EOT
+exit
+}
+
+if [ "$vol_id" == "" ]; then usage; fi
+if [ "$description" == "" ]; then usage; fi
+if [ "$keep" == "" ]; then usage;fi
+
+#set -v # verbose
+#set -x # echo
+# Sample outputs:
+#$ ec2-create-snapshot -d "DESCRIPTION" vol-12345678
+#SNAPSHOT    snap-12345678   vol-12345678    pending 2010-08-24T10:00:00+0000        680505800880    1   DESCRIPTION
+#$ ec2-describe-snapshots 
+#SNAPSHOT    snap-12345678   vol-12345678    completed   2010-08-24T10:00:00+0000    100%    680505800880    1 DESCRIPTION
+
+
+# get snapshot list. sort -k5 sorts on the 5th field (date). head -n -$keep
+# returns all but the last $keep lines.
+snaps=`ec2-describe-snapshots -o self | grep completed | grep $vol_id | grep "$description" | sort -k5`
+
+snap_status() {
+    msg=$1
+    shift
+    echo `echo $@ | grep -o SNAPSHOT|wc -w` $msg
+    echo $@ | sed "s/SNAPSHOT/\nSNAPSHOT/g;"
+}
+
+snap_status "snapshots:" $snaps
+
+# cat, because echo eats newlines.
+snaps_to_delete=`cat<<EOT | head -n -$keep
+$snaps
+EOT
+`
+snap_status "snapshots will be deleted:" $snaps_to_delete
+
+snap_ids=`cat<<EOT | cut -f2
+$snaps_to_delete
+EOT`
+
+echo Deleting...
+for snap in $snap_ids
+do
+    ec2-delete-snapshot $snap
+done
+
+ec2-create-snapshot -d "$description" $vol_id

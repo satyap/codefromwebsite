@@ -1,0 +1,89 @@
+#!/usr/local/bin/perl -w
+
+#Strip Base Tags v1.0
+#
+#This script strips html base tags from documents, saving them at the end
+#of the document in a comment so that they can be rematched if necessary.
+#
+#There can be any number of href or src's. The script actually takes
+#anything between "" and removes all but the rightmost element, where
+#elements are delimited by '/'. Not perfect.
+#
+#Bugs: Only works on URLs within double quotes. Can inadvertantly chop off
+#things which are not urls. This happens to things which satisfy the
+#following conditions:
+#1. inside '<' and '>'
+#2. after an odd number of '"'
+#3. containing a '/'
+#
+#Usage: stripbasetags-1.0 infile [outfile]
+#outfile defaults to infile.bak
+#
+#By Satya <http://satyaonline.cjb.net/>.
+#Use at own risk. Freeware. Please keep these comments intact. Inform me
+#of changes and redistribution. Give me credit if used anywhere.
+#Standard disclaimers apply.
+
+#number of lines to ignore at top (useful to preserve base href tags)
+my $choptop=3;
+
+#whether or not to comment out all tags in the top $choptop lines
+#1=comment 0=don't comment
+my $comment=1;
+
+#location of the move binary
+my $mv='/bin/mv';
+
+######POLICE#LINE##DO#NOT#CROSS############POLICE#LINE##DO#NOT#CROSS######
+
+use strict;
+
+my $infile=$ARGV[0];
+my $outfile=($ARGV[1] || $infile.'.bak');
+my ($i,$j);
+my ($inquote)=(0);
+my (@words,@hrefs,@snippets);
+my $line;
+
+#print "$infile\n$outfile\n";
+
+
+open (IN,"<$infile") || die "$0: Can't open input $infile: $!\n";
+open (OUT,">$outfile")	|| die "$0: Can't open output $outfile: $!\n";
+print OUT <IN>;
+close(IN);
+close(OUT);
+($infile,$outfile)=($outfile,$infile);
+
+open (IN,"<$infile") || die "$0: Can't open input $infile: $!\n";
+open (OUT,">$outfile")	|| die "$0: Can't open output $outfile: $!\n";
+
+while(<IN>)	{
+if($.<=$choptop)	{
+	if ($comment)	{$_=~s/>/ -->/;	$_=~s/</<!-- /;}
+	print OUT $_;
+	next
+	}
+$line=$_;
+
+@words=split(/(")/,$line);
+for($i=0;$i<=$#words;$i++)	{
+	if($words[$i] eq '"' && $inquote==0)	{$inquote=1;next} 
+	if($words[$i] eq '"' && $inquote==1)	{$inquote=0;next};	
+	if($inquote==1 )	{
+		@hrefs=split(/\//,$words[$i]);
+		push(@snippets,$words[$i]."\n");
+		print OUT "\"$hrefs[$#hrefs]\"";
+		}
+	else	{print OUT $words[$i];}
+} #for $i
+
+
+} #while <IN>
+
+close(IN);
+print OUT "<!-- \n@snippets\n-->";
+
+close(OUT);
+
+#EOF

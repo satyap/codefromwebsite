@@ -1,0 +1,123 @@
+# SANSA E200P playlist maker.
+#
+# The playlists produced are in the extended M3U format and go in the MUSIC/
+# directory. Put imusic files in directories under MUSIC/ and run this script from
+# MUSIC/ like so:
+#   perl sansa.pl pls foo bar
+# This will create playlist (or playlists, see maxcount below) names pls000.M3U
+# pls001.M3U etc.  and they will contain files from MUSIC/foo and MUSIC/bar
+# directories.
+#
+# The M3U files go in MUSIC/ and the paths inside them are relative to MUSIC,
+# with backslashes as path separator.
+#
+# 2008-12-25
+# Creative Commons Attribution-Noncommercial-Share Alike 3.0 United States License
+# http://creativecommons.org/licenses/by-nc-sa/3.0/us/
+#
+# Created by Satya http://www.thesatya.com/
+
+use strict;
+use warnings;
+
+my $maxcount=20; # maximum number per playlist, -1 for unlimited.
+
+sub usage {
+    print<<EOT;
+Usage: $0 prefix directory [list]
+EOT
+    exit;
+}
+
+sub main {
+    my $prefix=$ARGV[0] || &usage;
+    my @dir=@ARGV;
+
+    shift @dir;
+
+    &usage if $#dir < 0;
+
+    my @list;
+    foreach my $dir(@dir) {
+        foreach my $entry (&buildlist($dir)) {
+            #$entry=~s/^$dir//;
+            $entry=~s/^\///;
+            $entry=~s/\//\\/g;
+            push @list, $entry;
+        }
+    }
+    my $fileop = M3U->new($prefix,$maxcount);
+    foreach my $item (@list) {
+        $fileop->add($item);
+    }
+    $fileop->close;
+
+}
+
+sub buildlist {
+    my $dir=shift;
+    my @list;
+    opendir(DIR, $dir) || return ();
+    my @files=readdir(DIR);
+    closedir(DIR);
+    foreach my $file(@files) {
+        my $path=$dir . '/' . $file;
+        next if $file=~/^\./; # skip hidden and parent directories
+        push( @list,&buildlist($path) ) if -d $path; # descend into directory
+        next unless (-f $path); # next unless is plain file
+        next unless $file=~/mp3$/i;
+        push(@list, $path);
+    }
+    return @list;
+}
+
+
+&main;
+
+package M3U;
+sub new($) {
+    my $class=shift;
+    die "null class" unless $class;
+    my $self={};
+    $self->{'prefix'} = shift;
+    die "no prefix given" unless $self->{'prefix'};
+    $self->{'maxcount'}=shift;
+    $self->{'opened'}=0;
+    $self->{'count'}=0;
+    $self->{'filecount'}=0;
+    bless $self, $class;
+    return $self;
+}
+
+sub add($) {
+    my $self=shift;
+    my $item=shift;
+    if($self->{'opened'}==0) {
+        $self->open;
+    }
+    my $name=(split /\\/, $item )[-1];
+    my $fh=$self->{'fh'};
+    print $fh "#EXTINF:-1,$name\r\n$item\r\n";
+    $self->{'count'} += 1;
+    if ($self->{'maxcount'} >0 and $self->{'count'} > $self->{'maxcount'}) {
+        $self->close;
+        $self->{'count'} = 0;
+    }
+}
+
+sub open {
+    my $self=shift;
+    my $fname=sprintf("%s%03d.M3U", $self->{'prefix'} , $self->{'filecount'});
+    open(FH, ">$fname") || die "$!";
+    print FH "#EXTM3U\r\n";
+    $self->{'fh'} = *FH{IO};
+    $self->{'opened'}=1;
+    $self->{'filecount'} += 1;
+}
+
+sub close {
+    my $self=shift;
+    return if $self->{'opened'}==0;
+    close($self->{'fh'});
+    $self->{'opened'}=0;
+}
